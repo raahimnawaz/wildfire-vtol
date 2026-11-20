@@ -9,6 +9,9 @@ The interesting constraint is that the AVR has **no floating-point unit**. Every
 `sin`, `sqrt` and quaternion product is a software routine, and the control loop
 still has to close at a usable rate.
 
+This is also the first piece of a larger build: a quadrotor that finds and maps
+wildfire hotspots, developed in simulation. See the [roadmap](#roadmap-a-wildfire-mapping-drone).
+
 ---
 
 ## How it works
@@ -124,6 +127,23 @@ there to check it.
   unmeasured.
 - **`dt` is unclamped.** A stalled bus feeds one large step into the integrator.
   Clamping would be wrong too, because it throws the rotation away.
+
+---
+
+## Roadmap: a wildfire-mapping drone
+
+This controller is meant to become the inner loop of a quadrotor that finds and
+maps wildfire hotspots. The plan is simulation first, and the project may stay
+there: flying near an active wildfire is prohibited in the US unless you are part
+of the response, and a simulator can still test every piece.
+
+| Stage | What | Where it runs |
+|---|---|---|
+| 1 | A quadrotor plant: propeller thrust and drag, motor lag, mixing from torque to four motor commands, and a magnetometer so yaw becomes observable | Simulation |
+| 2 | Move the controller to a microcontroller with an FPU and close a rate loop at 1 kHz or faster | A real board on a desk, against the simulated plant |
+| 3 | Full flight in PX4 SITL with Gazebo, with this attitude controller in place of PX4's | Simulation |
+| 4 | A wildfire scene: a thermal camera, hotspot detection, and a fire perimeter map fed to the spread model from [wildfire](https://github.com/raahimnawaz/wildfire) | Simulation |
+| 5 | Tethered hardware tests; real fire only with a land manager's permission or a fire-agency partnership | Optional |
 
 ---
 
