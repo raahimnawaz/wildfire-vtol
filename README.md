@@ -1,10 +1,10 @@
-# Quaternion Attitude Control
+# Wildfire VTOL
 
-The attitude core of a wildfire-mapping VTOL drone. Today it is quaternion attitude estimation and control on an ATmega2560 with no floating-point unit, flown against a rigid-body plant simulated in a custom Wokwi chip. The microcontroller never sees the true attitude: it estimates it from a noisy accelerometer and gyroscope and closes a PD loop on quaternion error.
+A small fleet of VTOL drones that maps a wildfire from the air and feeds a fire-spread forecast running on a laptop in the field, 1 to 36 hours ahead. **Phoenix**, a tiltrotor mothership, carries LiDAR and relays data; four **Dragonfly** tailsitters carry RGB, thermal and hyperspectral cameras. It is developed in simulation.
 
-The next stages turn it into a VTOL that hovers, transitions to wing-borne flight, and maps wildfire hotspots with a thermal camera, developed in simulation. See [where this is going](#where-this-is-going).
+What exists today is stage 0, the attitude core every aircraft will fly on: quaternion attitude estimation and control on an ATmega2560 with no floating-point unit, against a rigid-body plant simulated in a custom Wokwi chip. The microcontroller never sees the true attitude: it estimates it from a noisy accelerometer and gyroscope and closes a PD loop on quaternion error.
 
-## Results
+## Attitude core results
 
 Measured in software-in-the-loop: the real firmware and plant on a simulated clock and I²C bus, plus a cycle-accurate AVR simulator.
 
@@ -55,18 +55,25 @@ Conventions, gain design and timing are in [docs/attitude-core.md](docs/attitude
 
 ## Where this is going
 
-A VTOL: it takes off and lands vertically, then flies on its wing for the range and endurance that mapping a fire perimeter needs. A tailsitter is the leading design, since its 90° pitch between hover and cruise is exactly where Euler angles fail and quaternions don't. Tiltrotor and lift-plus-cruise layouts are the alternatives.
-
 ```mermaid
 flowchart LR
-  s0["0. Attitude core<br>(done)"] --> s1["1. VTOL plant model"]
-  s1 --> s2["2. Flight controller<br>hardware in the loop"]
-  s2 --> s3["3. PX4 SITL + Gazebo"]
-  s3 --> s4["4. Wildfire mission<br>in simulation"]
-  s4 -.-> s5["5. Hardware<br>(optional)"]
+  d["Dragonflies<br>RGB · RGB · thermal · hyperspectral"] --> p["Phoenix<br>relay, LiDAR, onboard fusion"]
+  p --> g["Field laptop<br>Rothermel ensemble + ML surrogate,<br>corrected by the drone data"]
+  c["Pre-cached weather,<br>fuels and terrain"] --> g
+  g --> f["1–36 h fire forecast"]
 ```
 
-Development is simulation first and may stay there: flying near an active wildfire is prohibited in the US unless you are part of the response. The airframe comparison, each stage's goal, and the target architecture are in [docs/roadmap.md](docs/roadmap.md).
+| Stage | What |
+|---|---|
+| 0 | Attitude core on an FPU-less AVR (done) |
+| 1 | Plant models for Phoenix and a Dragonfly, with wing aerodynamics through stall |
+| 2 | Flight controller on an FPU microcontroller, hardware in the loop |
+| 3 | All five aircraft in PX4 SITL, with fault injection |
+| 4 | Photorealistic California fire scenes and sensors in Isaac Sim |
+| 5 | The field forecast, fed live from the simulated fleet |
+| 6 | Hardware, optional |
+
+Flying near an active wildfire is prohibited in the US unless you are part of the response, so the project is simulation first and may stay there. The airframe choices, the sensor-to-forecast mapping, the simulation stack and each stage's goal are in [docs/roadmap.md](docs/roadmap.md).
 
 ## Running it
 
@@ -89,7 +96,7 @@ Attitude error in degrees is `2·acos(|⟨q_est, q_true⟩|)`, computed on the h
 ```
 sketch.ino        firmware: fusion, control law, OLED, telemetry
 chip/             simulated plant: rigid-body dynamics and IMU
-docs/             design notes and the VTOL roadmap
+docs/             attitude-core notes and the fleet roadmap
 diagram.json      Wokwi wiring
 libraries.txt     Wokwi library manifest
 platformio.ini    local AVR build
@@ -101,5 +108,5 @@ Earlier results and tooling live in tags:
 
 | Tag | Holds | Restore with |
 |---|---|---|
-| [`archive-v2`](https://github.com/raahimnawaz/quaternion-attitude-control/tree/archive-v2) | The test harness and cycle benchmark behind every number above, CI, the naive control law, and the full write-up of each result | `git checkout archive-v2 -- test .github results README.md` |
-| [`archive-v1`](https://github.com/raahimnawaz/quaternion-attitude-control/tree/archive-v1) | The recorded 181° Wokwi runs, the original design blueprint, and the v1 STM32WBA55 schematic with its review (eight netlist defects; don't fabricate it as drawn) | `git checkout archive-v1 -- docs hardware results` |
+| [`archive-v2`](https://github.com/raahimnawaz/wildfire-vtol/tree/archive-v2) | The test harness and cycle benchmark behind every number above, CI, the naive control law, and the full write-up of each result | `git checkout archive-v2 -- test .github results README.md` |
+| [`archive-v1`](https://github.com/raahimnawaz/wildfire-vtol/tree/archive-v1) | The recorded 181° Wokwi runs, the original design blueprint, and the v1 STM32WBA55 schematic with its review (eight netlist defects; don't fabricate it as drawn) | `git checkout archive-v1 -- docs hardware results` |
