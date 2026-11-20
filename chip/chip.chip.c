@@ -9,8 +9,7 @@
 #define REG_TORQUE     0x50 // W, 12  torque x,y,z        float32, N.m
 #define REG_IMU_DATA   0x70 // R, 24  accel x,y,z then gyro x,y,z -- one atomic read
 
-// Everything the master can read, frozen at the instant a read transaction opens.
-// See on_i2c_connect for why this exists.
+// Readable state, frozen when a transaction opens (see on_i2c_connect).
 typedef struct {
   float q[4];
   float accel[3];
@@ -111,31 +110,15 @@ static bool on_i2c_connect(void *user_data, uint32_t address, bool is_write) {
   chip_state_t *chip = (chip_state_t *)user_data;
   chip->buffer_index = 0;
 
-  // The plant advances every 1 ms. A 24-byte read at 400 kHz occupies the bus for
-  // roughly 600 us, so on_timer_tick WILL fire partway through one and the master
-  // ends up with the first few bytes from step N and the rest from step N+1.
-  // For a quaternion that means a non-unit result assembled from two instants;
-  // for accel-vs-gyro it means a fusion filter comparing measurements that never
-  // coexisted.
-  //
-  // Latching the whole readable state here makes every transaction atomic with
-  // respect to the physics tick.
-  //
-  // Unconditional, not gated on !is_write. The read path is addressed twice --
-  // once to write the register pointer, then a repeated START for the data -- and
-  // gating on !is_write would depend on Wokwi re-invoking this callback for that
-  // repeated START. If it does not, the snapshot would never refresh and every
-  // read would serve stale data, which is worse than the tearing this fixes.
-  // Latching on both addressings costs one extra memcpy on write transactions and
-  // removes the dependency on that behaviour entirely.
+    // Latch the readable state on every connect, so a read that spans a 1 ms
+    // physics tick still returns one consistent instant.
   memcpy(chip->snap.q,     chip->q,         sizeof(chip->snap.q));
   memcpy(chip->snap.accel, chip->accel_out, sizeof(chip->snap.accel));
   memcpy(chip->snap.gyro,  chip->gyro_out,  sizeof(chip->snap.gyro));
   return true;
 }
 
-// Little-endian float32 on the wire; AVR and WASM agree, so a raw byte view is
-// the whole serialisation.
+// Little-endian float32 on the wire.
 static uint8_t byte_of(const float *src, uint8_t offset) {
   return ((const uint8_t *)src)[offset];
 }
@@ -145,8 +128,7 @@ static uint8_t on_i2c_read(void *user_data) {
   uint8_t data = 0;
   uint8_t reg = chip->current_reg;
 
-  // Ground truth. The controller must never read this; it exists so the host
-  // can score the estimator against the plant.
+    // Ground truth for scoring only; the controller never reads it.
   if (reg >= REG_Q_TRUE && reg < REG_Q_TRUE + 16) {
     data = byte_of(chip->snap.q, reg - REG_Q_TRUE);
   }

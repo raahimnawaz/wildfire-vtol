@@ -10,14 +10,10 @@
 #define OLED_RESET -1
 #define OLED_ADDR 0x3C
 
-// The last two arguments are the bus clock during and *after* each display
-// transfer. The library's default "after" is 100 kHz, which silently undid
-// Wire.setClock(400000) for every plant transaction.
+// Both clocks are 400 kHz: the library otherwise drops the bus to 100 kHz after each transfer.
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET, 400000UL, 400000UL);
 
-// Plant register map -- keep in sync with chip/chip.chip.c.
-// These were bare hex literals at three call sites, which is how 0x30 came to mean
-// two different things in two different files.
+// Plant register map: keep in sync with chip/chip.chip.c.
 #define PLANT_ADDR   0x42
 #define REG_Q_TRUE   0x30 // R, 16  ground truth -- SCORING ONLY, never in the control path
 #define REG_TORQUE   0x50 // W, 12
@@ -27,35 +23,12 @@ struct Quat { float w, x, y, z; };
 struct Vec3 { float x, y, z; };
 
 // --- Reciprocal square root ---
-// Called once per control loop, to normalise the accelerometer vector -- only
-// its direction matters, so one Newton step is accurate enough.
-//
-// Which implementation is faster depends entirely on whether the target has a
-// hardware FPU, so this is decided at compile time rather than assumed:
-//
-//   Arduino Mega (ATmega2560) -- no FPU. Every float operation is a libgcc
-//     call and sqrtf() is a software routine, so trading a square root and a
-//     divide for an integer shift and subtract, four multiplies and a float
-//     subtract is a saving: 730 cycles against 979 (simavr). This is the
-//     board the Wokwi prototype runs on.
-//
-//   ESP32 (Xtensa LX6) and STM32WBA55 (Cortex-M33F) -- both have a
-//     single-precision FPU. 1.0f/sqrtf(x) is a couple of instructions and
-//     correctly rounded, while the bit trick additionally pays to move the
-//     value between the integer and float register files. On these parts the
-//     "optimisation" is slower AND less accurate.
-//
-// So on any FPU target this firmware moves to, the fast path is the plain divide.
+// Normalises the accelerometer direction once per loop. On the FPU-less AVR the
+// bit trick is faster (730 vs 979 cycles); on any FPU target, use 1.0f/sqrtf.
 #if defined(__AVR__)
 static inline float invSqrt(float x) {
-  // Bit-level initial guess (Quake III) + one Newton-Raphson step. The magic
-  // constant lands within ~3.4%; one step takes that to a worst-case relative
-  // error of ~1.75e-3. Fine for a direction vector, NOT fine for q_est.
-  //
-  // memcpy rather than *(long*)&y: type-punning through a pointer cast is a
-  // strict-aliasing violation -- undefined behaviour that -O2 is entitled to
-  // miscompile -- and `long` is not 32 bits everywhere. Every compiler in use
-  // turns this memcpy into the same register move.
+    // Quake III initial guess plus one Newton step: ~1.75e-3 worst-case error, fine
+    // for a direction, not for q_est. memcpy avoids undefined type punning.
   float halfx = 0.5f * x;
   uint32_t i;
   memcpy(&i, &x, sizeof i);
@@ -113,18 +86,13 @@ uint32_t last_telemetry_millis = 0;
 uint32_t max_dt_us = 0;
 float Kp_imu = 2.5f; 
 
-// Mahony integral term: the estimate of the gyro's bias, rad/s, same sign as the
-// bias. Linearised, the tilt error obeys s^2 + Kp_imu s + Ki_imu = 0, and
-// Ki_imu = Kp_imu^2 / 4 makes that critically damped: a double pole at 1.25 rad/s.
-// Without a magnetometer only the bias component perpendicular to gravity is
-// observable: level, that is roll and pitch, and yaw is never estimated.
+// Mahony integral term: the gyro-bias estimate, rad/s. Ki_imu = Kp_imu^2 / 4
+// critically damps the tilt error. Yaw bias is unobservable without a magnetometer.
 Vec3 gyro_bias = {0.0f, 0.0f, 0.0f};
 float Ki_imu = 1.5625f;
 
 // --- OLED streaming ---
-// One display() is 1024 bytes plus headers: ~25 ms of bus at 400 kHz, during
-// which the loop is stalled. Instead the framebuffer goes out two Wire-buffer
-// chunks per control iteration: ~1.5 ms of bus per loop, ~10 FPS.
+// A full display() stalls the loop ~25 ms, so the frame goes out in two chunks per loop.
 const uint16_t OLED_BYTES = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
 const uint8_t OLED_CHUNK = 31;    // 32-byte AVR Wire buffer, less the 0x40 prefix
 const uint8_t OLED_CHUNKS_PER_LOOP = 2;
@@ -155,9 +123,7 @@ void oled_send_chunk() {
 
 void render_horizon() {
   float roll  = atan2(2.0f * (q_est.w * q_est.x + q_est.y * q_est.z), 1.0f - 2.0f * (q_est.x * q_est.x + q_est.y * q_est.y));
-  // The clamp is load-bearing. Float error in the norm pushes
-  // this argument past +/-1 and asin returns NaN, which reaches the display and
-  // reads as a controller failure rather than a numerics failure.
+    // Clamp: rounding can push the argument past +/-1, and asin would return NaN.
   float pitch = asin(clampf(2.0f * (q_est.w * q_est.y - q_est.z * q_est.x), -1.0f, 1.0f));
 
   display.clearDisplay();
@@ -177,9 +143,7 @@ void render_horizon() {
   display.drawLine(x0, y0, x1, y1, SSD1306_WHITE);
 }
 
-// Serial.print(float, 4) costs ~8,800 cycles a value in soft float. Quaternion
-// components are in [-1, 1], so format them as fixed point: same text, a
-// fraction of the cost.
+// Fixed-point printing: Serial.print(float) costs ~8,800 cycles per value on the AVR.
 void print_fixed4(float v) {
   static const int16_t place[4] = {1000, 100, 10, 1};
   int16_t n = lround(v * 10000.0f);
@@ -223,10 +187,8 @@ void setup() {
 void loop() {
   uint32_t now = micros();
 
-  // --- 1. SENSOR READING (Raw IMU Data) ---
-  // One transaction for both sensors. Two transactions would sample two different
-  // instants of a 1 kHz plant; the chip additionally latches
-  // its state on connect so this read is atomic with respect to the physics tick.
+    // --- 1. SENSOR READING ---
+    // One transaction for both sensors, so accel and gyro come from the same plant tick.
   Vec3 accel, gyro;
   Wire.beginTransmission(PLANT_ADDR);
   Wire.write(REG_IMU_DATA);
@@ -235,10 +197,8 @@ void loop() {
     Wire.readBytes((uint8_t*)&accel, 12);
     Wire.readBytes((uint8_t*)&gyro, 12);
   } else {
-    // Short read: readBytes would time out and leave accel/gyro partly filled with
-    // stack garbage, which then gets integrated. Skip this cycle instead -- and
-    // leave last_micros alone, so the next good sample integrates across the
-    // whole gap rather than the estimator silently losing its rotation.
+        // Short read: skip this cycle and keep last_micros, so the next good sample
+        // integrates across the gap.
     return;
   }
 
@@ -247,16 +207,8 @@ void loop() {
   if (dt_us > max_dt_us) max_dt_us = dt_us;
   float dt = dt_us / 1000000.0f;
 
-  // --- 2. MAHONY SENSOR FUSION FILTER (Optimized) ---
-  // The filter mutates `gyro` in place into a corrected rate for the integrator:
-  // less the bias estimate, plus Kp_imu * (accelerometer residual).
-  // The PD law's derivative term needs the raw measurement, not that corrected
-  // value -- see the note at the control law. Keep a copy before it is touched.
-  //
-  // Quantified: the correction adds Kp_imu * (a x v_est) into `gyro`, which is
-  // estimator feedback, not angular rate. Routing it into the controller feeds
-  // estimator error straight to commanded torque (Kd*Kp_imu = 10.5 against a Kp
-  // of 18) and amplifies accelerometer noise into the actuator by 2.5x.
+    // --- 2. MAHONY SENSOR FUSION ---
+    // The filter corrects `gyro` in place; the PD law needs the raw rate, so keep a copy.
   const Vec3 gyro_raw = gyro;
 
   float accel_sq = accel.x*accel.x + accel.y*accel.y + accel.z*accel.z;
@@ -305,10 +257,7 @@ void loop() {
   q_est.y += q_dot.y * dt;
   q_est.z += q_dot.z * dt;
 
-  // Quaternion normalization -- the plain library call, on every target. One
-  // Newton step leaves |q| biased by ~1.7e-3, the error that compounds and
-  // reaches asin(); a second step fixes that but measures 1,250-1,300 cycles
-  // against 979 for the correctly rounded 1/sqrtf (simavr, ATmega2560).
+    // Normalise with 1/sqrtf: one Newton step would leave a ~1.7e-3 bias that compounds.
   float q_norm_inv = 1.0f / sqrtf(q_est.w*q_est.w + q_est.x*q_est.x + q_est.y*q_est.y + q_est.z*q_est.z);
   q_est.w *= q_norm_inv; 
   q_est.x *= q_norm_inv; 
@@ -328,11 +277,8 @@ void loop() {
   // q and -q are the same attitude: take the short way round.
   float sign_w = (q_err.w >= 0.0f) ? 1.0f : -1.0f;
 
-  // Derivative term uses gyro_raw, not the Mahony-corrected gyro. The corrected
-  // value carries Kp_imu * (accelerometer residual), so feeding it here would
-  // multiply accelerometer noise by Kp_imu * Kd straight into the torque command.
-  // It does subtract the bias estimate: that is integrated, so nearly noise-free,
-  // and without it the law holds a standing error of Kd * bias / Kp.
+    // Derivative term: raw gyro minus the bias estimate. The filter-corrected rate
+    // would feed accelerometer noise into the torque.
   Vec3 tau;
   tau.x = (Kp_base[0] * gain_multiplier) * sign_w * q_err.x - (Kd_base[0] * gain_multiplier) * (gyro_raw.x - gyro_bias.x);
   tau.y = (Kp_base[1] * gain_multiplier) * sign_w * q_err.y - (Kd_base[1] * gain_multiplier) * (gyro_raw.y - gyro_bias.y);
@@ -358,16 +304,8 @@ void loop() {
   if (!rendered && millis() - last_telemetry_millis >= 33) {
     last_telemetry_millis = millis();
 
-    // --- GROUND TRUTH: SCORING ONLY ---
-    // Read here, inside the telemetry block, and never above it. By the time this
-    // runs the torque command has already gone out, and q_true lives in a local
-    // that dies at the end of this scope -- so there is no name the control path
-    // could refer to it by even by accident. M7's whole premise is that the
-    // estimator does not get to see truth, and scope enforces that
-    // better than a comment asking the next person not to.
-    //
-    // 16 bytes in one transaction. Four separate reads would assemble a
-    // quaternion out of four different instants of a 1 kHz plant.
+        // --- GROUND TRUTH: SCORING ONLY ---
+        // Read after the torque command, into a local, so the control path cannot use it.
     Quat q_true = {1.0f, 0.0f, 0.0f, 0.0f};
     bool truth_ok = false;
     Wire.beginTransmission(PLANT_ADDR);
@@ -378,11 +316,8 @@ void loop() {
       truth_ok = true;
     }
 
-    // Telemetry for the Python dashboard.
-    // Columns: q_est.w,q_est.x,q_est.y,q_est.z,q_true.w,q_true.x,q_true.y,q_true.z,max_dt_us
-    // Raw quaternions rather than a precomputed error angle -- the scoring metric
-    // should be changeable without reflashing, and the MCU has better things to do.
-    // max_dt_us is the worst loop period since the previous line.
+        // Columns: q_est.w,q_est.x,q_est.y,q_est.z,q_true.w,q_true.x,q_true.y,q_true.z,max_dt_us
+        // max_dt_us is the worst loop period since the previous line.
     print_fixed4(q_est.w); Serial.print(',');
     print_fixed4(q_est.x); Serial.print(',');
     print_fixed4(q_est.y); Serial.print(',');
