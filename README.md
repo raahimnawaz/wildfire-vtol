@@ -2,6 +2,8 @@
 
 A small fleet of VTOL drones that maps a wildfire from the air and feeds a fire-spread forecast running on a laptop in the field, 1 to 36 hours ahead. **Phoenix**, a tiltrotor mothership, carries LiDAR and relays data; four **Dragonfly** tailsitters carry RGB, thermal and hyperspectral cameras. It is developed in simulation.
 
+> **Builds on** [aerospace-surrogate](https://github.com/raahimnawaz/aerospace-surrogate) for the wing model and [wildfire](https://github.com/raahimnawaz/wildfire) for the fire forecast, both planned for later stages (see the [roadmap](docs/roadmap.md)).
+
 What exists today is stage 0, the attitude core every aircraft will fly on: quaternion attitude estimation and control on an ATmega2560 with no floating-point unit, against a rigid-body plant simulated in a custom Wokwi chip. The microcontroller never sees the true attitude: it estimates it from a noisy accelerometer and gyroscope and closes a PD loop on quaternion error.
 
 ## Attitude core results
